@@ -14,13 +14,14 @@ from src.transform import preprocess_point_cloud
 
 
 def process_file(input_file: Path, project_dir: Path, control_points):
-    """Process one point cloud file and save results in its own folder."""
+    """Process one LAS point cloud and save results next to the input folder."""
 
     project_name = input_file.stem
-    output_dir = project_dir / "output" / project_name
+    output_dir = project_dir / "processed"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n=== Processing: {input_file.name} ===")
+    print(f"Input directory: {project_dir}")
     print(f"Output directory: {output_dir}")
 
     print("Loading point cloud...")
@@ -56,53 +57,30 @@ def process_file(input_file: Path, project_dir: Path, control_points):
 
 
 def process_project(project_dir: Path):
-    """Process the standard single input file for a project."""
+    """Process a folder containing exactly one LAS and control_points.txt."""
+
+    if not project_dir.exists():
+        raise FileNotFoundError(f"Input directory not found: {project_dir}")
 
     input_file = find_input_file(project_dir)
-
-    print(f"Loading control points for {project_dir.name}...")
     control_points_file = find_control_points_file(project_dir)
+
+    print(f"Loading control points: {control_points_file}")
     control_points = load_control_points(control_points_file)
 
     process_file(input_file, project_dir, control_points)
 
 
-def process_all_las(project_dir: Path):
-    """Process every LAS file directly inside the project directory."""
-
-    las_files = sorted(project_dir.glob("*.las"))
-
-    if not las_files:
-        raise FileNotFoundError(f"No LAS files found in: {project_dir}")
-
-    print(f"Found {len(las_files)} LAS file(s) in {project_dir}")
-
-    print("Loading control points...")
-    control_points_file = find_control_points_file(project_dir)
-    control_points = load_control_points(control_points_file)
-
-    for input_file in las_files:
-        process_file(input_file, project_dir, control_points)
-
-    print(f"\nProcessed {len(las_files)} LAS file(s).")
-
-
 def main():
-
     if len(sys.argv) == 2:
-        project_name = sys.argv[1]
-        project_dir = Path("data") / project_name
-        process_project(project_dir)
-        return
-
-    if len(sys.argv) == 3 and sys.argv[1] == "--all-las":
-        project_dir = Path(sys.argv[2])
-        process_all_las(project_dir)
+        process_project(Path(sys.argv[1]))
         return
 
     print("Usage:")
-    print("  python main.py <project_name>")
-    print("  python main.py --all-las <project_dir>")
+    print("  python main.py <input_folder>")
+    print()
+    print("Example:")
+    print("  python main.py /home/kamil/Projects/pointcloud-preprocessor/data/dso7/output/dso7_apartment_f000/")
 
 
 if __name__ == "__main__":
