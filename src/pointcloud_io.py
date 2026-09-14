@@ -4,35 +4,34 @@ import laspy
 import numpy as np
 import open3d as o3d
 
-SUPPORTED_EXTENSIONS = (".las", ".ply", ".pcd")
+SUPPORTED_EXTENSIONS = (".las",)
 
 
 def find_input_file(project_dir: Path) -> Path:
+    """Find the single LAS point cloud stored directly in project/input."""
     input_dir = project_dir / "input"
-    project_name = project_dir.name
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
-    for extension in SUPPORTED_EXTENSIONS:
-        input_file = input_dir / f"{project_name}{extension}"
+    las_files = sorted(input_dir.glob("*.las"))
 
-        if input_file.exists():
-            return input_file
+    if not las_files:
+        raise FileNotFoundError(f"No LAS point cloud found in: {input_dir}")
 
-    expected_files = "\n".join(
-        str(input_dir / f"{project_name}{ext}")
-        for ext in SUPPORTED_EXTENSIONS
-    )
+    if len(las_files) > 1:
+        files = "\n".join(str(path) for path in las_files)
+        raise ValueError(
+            "Expected exactly one LAS point cloud in input/. Found:\n" + files
+        )
 
-    raise FileNotFoundError(
-        f"No input point cloud found.\nExpected one of:\n{expected_files}"
-    )
+    return las_files[0]
 
 
 def find_control_points_file(project_dir: Path) -> Path:
-    """Find control_points.txt directly in the project directory."""
-    file_path = project_dir / "control_points.txt"
+    """Find control_points.txt directly in the project's input directory."""
+    input_dir = project_dir / "input"
+    file_path = input_dir / "control_points.txt"
 
     if not file_path.exists():
         raise FileNotFoundError(
@@ -62,9 +61,6 @@ def load_point_cloud(file_path: Path) -> o3d.geometry.PointCloud:
 
         return cloud
 
-    if suffix in (".ply", ".pcd"):
-        return o3d.io.read_point_cloud(str(file_path))
-
     raise ValueError(f"Unsupported file format: {suffix}")
 
 
@@ -89,10 +85,6 @@ def save_point_cloud(
 ):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     suffix = output_path.suffix.lower()
-
-    if suffix in (".ply", ".pcd"):
-        o3d.io.write_point_cloud(str(output_path), cloud)
-        return
 
     if suffix == ".las":
         if template_path is None:
