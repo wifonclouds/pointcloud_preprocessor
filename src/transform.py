@@ -18,8 +18,8 @@ def preprocess_point_cloud(
         P2 - end of reference direction
 
     The cloud is:
-        1. translated so that P0 becomes (0,0,0)
-        2. rotated around Z so that P1->P2 aligns with +X.
+        1. translated so that P0 becomes (0, 0, 0)
+        2. rotated around Z so that P1->P2 aligns with +Y.
     """
 
     if control_points.shape != (3, 3):
@@ -44,7 +44,8 @@ def preprocess_point_cloud(
     dx = p2[0] - p1[0]
     dy = p2[1] - p1[1]
 
-    theta = -math.atan2(dy, dx)
+    # Rotate P1->P2 onto +Y (angle of +Y is +pi/2).
+    theta = (math.pi / 2.0) - math.atan2(dy, dx)
 
     rotation_matrix = cloud.get_rotation_matrix_from_xyz((0.0, 0.0, theta))
 
