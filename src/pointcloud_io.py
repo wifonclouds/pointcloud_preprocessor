@@ -29,15 +29,22 @@ def find_input_file(project_dir: Path) -> Path:
         f"No input point cloud found.\nExpected one of:\n{expected_files}"
     )
 
+
 def find_control_points_file(project_dir: Path) -> Path:
-    file_path = project_dir / "control_points" / "control_points.txt"
+    candidates = [
+        project_dir / "control_point.txt",
+        project_dir / "control_points" / "control_points.txt",
+    ]
 
-    if not file_path.exists():
-        raise FileNotFoundError(
-            f"Control points file not found: {file_path}"
-        )
+    for file_path in candidates:
+        if file_path.exists():
+            return file_path
 
-    return file_path
+    expected_files = "\n".join(str(path) for path in candidates)
+    raise FileNotFoundError(
+        f"Control points file not found. Expected one of:\n{expected_files}"
+    )
+
 
 def load_point_cloud(file_path: Path) -> o3d.geometry.PointCloud:
     suffix = file_path.suffix.lower()
@@ -58,6 +65,7 @@ def load_point_cloud(file_path: Path) -> o3d.geometry.PointCloud:
     else:
         raise ValueError(f"Unsupported file format: {suffix}")
 
+
 def load_control_points(file_path: Path) -> np.ndarray:
     try:
         control_points = np.loadtxt(file_path, dtype=float, delimiter=",")
@@ -71,8 +79,8 @@ def load_control_points(file_path: Path) -> np.ndarray:
 
     return control_points
 
+
 def save_point_cloud(
-        
     cloud: o3d.geometry.PointCloud,
     output_path: Path,
     template_path: Path | None = None,
@@ -85,7 +93,6 @@ def save_point_cloud(
         return
 
     if suffix == ".las":
-
         if template_path is None:
             raise ValueError("template_path is required for LAS export.")
 
