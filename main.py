@@ -52,12 +52,6 @@ def process_file(input_file: Path, project_dir: Path, control_points):
         input_file,
     )
 
-    save_point_cloud(
-        result.cropped,
-        output_dir / f"{project_name}_cropped{input_file.suffix}",
-        input_file,
-    )
-
     print("Done")
 
 
