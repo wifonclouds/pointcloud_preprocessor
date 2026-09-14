@@ -31,19 +31,15 @@ def find_input_file(project_dir: Path) -> Path:
 
 
 def find_control_points_file(project_dir: Path) -> Path:
-    candidates = [
-        project_dir / "control_point.txt",
-        project_dir / "control_points" / "control_points.txt",
-    ]
+    """Find control_point.txt directly in the project directory."""
+    file_path = project_dir / "control_point.txt"
 
-    for file_path in candidates:
-        if file_path.exists():
-            return file_path
+    if not file_path.exists():
+        raise FileNotFoundError(
+            f"Control points file not found: {file_path}"
+        )
 
-    expected_files = "\n".join(str(path) for path in candidates)
-    raise FileNotFoundError(
-        f"Control points file not found. Expected one of:\n{expected_files}"
-    )
+    return file_path
 
 
 def load_point_cloud(file_path: Path) -> o3d.geometry.PointCloud:
