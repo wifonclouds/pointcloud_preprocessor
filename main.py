@@ -13,30 +13,22 @@ from src.segmentation import segment_point_cloud
 from src.transform import preprocess_point_cloud
 
 
-def main():
+def process_file(input_file: Path, project_dir: Path, control_points):
+    """Process one point cloud file and save floor, walls and cropped results."""
 
-    if len(sys.argv) != 2:
-        print("Usage: python main.py <project_name>")
-        return
+    project_name = input_file.stem
+    output_dir = project_dir / "output"
 
-    project_name = sys.argv[1]
-    project_dir = Path("data") / project_name
+    print(f"\n=== Processing: {input_file.name} ===")
 
     print("Loading point cloud...")
-    input_file = find_input_file(project_dir)
     cloud = load_point_cloud(input_file)
-
-    print("Loading control points...")
-    control_points_file = find_control_points_file(project_dir)
-    control_points = load_control_points(control_points_file)
 
     print("Transforming point cloud...")
     cloud = preprocess_point_cloud(cloud, control_points)
 
     print("Segmenting point cloud...")
     result = segment_point_cloud(cloud)
-
-    output_dir = project_dir / "output"
 
     print("Saving results...")
 
@@ -58,10 +50,58 @@ def main():
         input_file,
     )
 
-    print("\nDone!")
-    print(f"Floor   : {output_dir / f'{project_name}_floor{input_file.suffix}'}")
-    print(f"Walls   : {output_dir / f'{project_name}_walls{input_file.suffix}'}")
-    print(f"Cropped : {output_dir / f'{project_name}_cropped{input_file.suffix}'}")
+    print("Done")
+
+
+def process_project(project_dir: Path):
+    """Process the standard single input file for a project."""
+
+    project_name = project_dir.name
+    input_file = find_input_file(project_dir)
+
+    print(f"Loading control points for {project_name}...")
+    control_points_file = find_control_points_file(project_dir)
+    control_points = load_control_points(control_points_file)
+
+    process_file(input_file, project_dir, control_points)
+
+
+def process_all_las(project_dir: Path):
+    """Process every LAS file directly inside the project directory."""
+
+    las_files = sorted(project_dir.glob("*.las"))
+
+    if not las_files:
+        raise FileNotFoundError(f"No LAS files found in: {project_dir}")
+
+    print(f"Found {len(las_files)} LAS file(s) in {project_dir}")
+
+    print("Loading control points...")
+    control_points_file = find_control_points_file(project_dir)
+    control_points = load_control_points(control_points_file)
+
+    for input_file in las_files:
+        process_file(input_file, project_dir, control_points)
+
+    print(f"\nProcessed {len(las_files)} LAS file(s).")
+
+
+def main():
+
+    if len(sys.argv) == 2:
+        project_name = sys.argv[1]
+        project_dir = Path("data") / project_name
+        process_project(project_dir)
+        return
+
+    if len(sys.argv) == 3 and sys.argv[1] == "--all-las":
+        project_dir = Path(sys.argv[2])
+        process_all_las(project_dir)
+        return
+
+    print("Usage:")
+    print("  python main.py <project_name>")
+    print("  python main.py --all-las <project_dir>")
 
 
 if __name__ == "__main__":
