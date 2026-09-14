@@ -8,30 +8,24 @@ SUPPORTED_EXTENSIONS = (".las",)
 
 
 def find_input_file(project_dir: Path) -> Path:
-    """Find the single LAS point cloud stored directly in project/input."""
-    input_dir = project_dir / "input"
-
-    if not input_dir.exists():
-        raise FileNotFoundError(f"Input directory not found: {input_dir}")
-
-    las_files = sorted(input_dir.glob("*.las"))
+    """Find the single LAS point cloud stored directly in the input folder."""
+    las_files = sorted(project_dir.glob("*.las"))
 
     if not las_files:
-        raise FileNotFoundError(f"No LAS point cloud found in: {input_dir}")
+        raise FileNotFoundError(f"No LAS point cloud found in: {project_dir}")
 
     if len(las_files) > 1:
         files = "\n".join(str(path) for path in las_files)
         raise ValueError(
-            "Expected exactly one LAS point cloud in input/. Found:\n" + files
+            "Expected exactly one LAS point cloud in the input folder. Found:\n" + files
         )
 
     return las_files[0]
 
 
 def find_control_points_file(project_dir: Path) -> Path:
-    """Find control_points.txt directly in the project's input directory."""
-    input_dir = project_dir / "input"
-    file_path = input_dir / "control_points.txt"
+    """Find control_points.txt directly in the input folder."""
+    file_path = project_dir / "control_points.txt"
 
     if not file_path.exists():
         raise FileNotFoundError(
