@@ -21,18 +21,16 @@ def segment_point_cloud(
     wall_angle: float = 15.0,
     horizontal_cluster_eps: float = 0.12,
     horizontal_cluster_min_points: int = 100,
-    floor_height_tolerance: float = 0.50,
-    ceiling_min_height: float = 2.00,
     wall_sor_neighbors: int = 30,
     wall_sor_std_ratio: float = 1.5,
 ) -> SegmentationResult:
-    """Segment horizontal floor/ceiling surfaces and walls.
+    """Segment large horizontal planes and walls.
 
-    The first control point provides the floor height reference. All large
-    horizontal planes close to that height are classified as floor. A large
-    horizontal plane is classified as ceiling only when it is at least
-    ``ceiling_min_height`` above the floor reference. Horizontal planes in
-    between remain unclassified by this stage.
+    The first control point is the origin/reference point. The large
+    horizontal plane closest to that point defines the floor reference.
+    Every other large horizontal plane above that floor is classified as
+    ceiling. Horizontal planes below the floor reference are ignored by
+    floor/ceiling classification.
     """
 
     if control_points.shape != (3, 3):
@@ -67,8 +65,6 @@ def segment_point_cloud(
         points,
         large_horizontal_planes,
         floor_reference_z=floor_reference_z,
-        floor_height_tolerance=floor_height_tolerance,
-        ceiling_min_height=ceiling_min_height,
     )
 
     floor_cloud = cloud.select_by_index(floor_indices)
@@ -166,7 +162,7 @@ def _get_floor_reference_z(
     planes: list[np.ndarray],
     origin: np.ndarray,
 ) -> float:
-    """Get the height of the horizontal plane closest to the origin point."""
+    """Return the Z height of the horizontal plane nearest the origin in XY."""
 
     if not planes:
         raise ValueError("No large horizontal planes detected.")
@@ -196,35 +192,39 @@ def _classify_horizontal_planes(
     points: np.ndarray,
     planes: list[np.ndarray],
     floor_reference_z: float,
-    floor_height_tolerance: float,
-    ceiling_min_height: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Classify every detected horizontal plane as floor or ceiling.
-
-    Multiple planes can belong to the floor when their height is close to the
-    floor reference. A ceiling must be at least ``ceiling_min_height`` above
-    the floor reference. Intermediate horizontal planes are ignored here.
-    """
+    """Classify the nearest horizontal plane as floor and all higher planes as ceiling."""
 
     floor_parts: list[np.ndarray] = []
     ceiling_parts: list[np.ndarray] = []
 
-    ceiling_height = floor_reference_z + ceiling_min_height
+    floor_plane_found = False
 
     for plane_indices in planes:
         plane_z = float(np.median(points[plane_indices, 2]))
 
-        if abs(plane_z - floor_reference_z) <= floor_height_tolerance:
+        # The plane used to establish the reference is the floor.
+        if not floor_plane_found and np.isclose(
+            plane_z,
+            floor_reference_z,
+            atol=0.01,
+        ):
             floor_parts.append(plane_indices)
-        elif plane_z >= ceiling_height:
+            floor_plane_found = True
+        elif plane_z > floor_reference_z:
             ceiling_parts.append(plane_indices)
 
-    floor_indices = (
-        np.concatenate(floor_parts)
-        if floor_parts
-        else np.array([], dtype=int)
-    )
+    # Safety fallback: find the plane whose Z is closest to the reference.
+    if not floor_parts and planes:
+        floor_plane = min(
+            planes,
+            key=lambda indices: abs(
+                float(np.median(points[indices, 2])) - floor_reference_z
+            ),
+        )
+        floor_parts.append(floor_plane)
 
+    floor_indices = np.concatenate(floor_parts) if floor_parts else np.array([], dtype=int)
     ceiling_indices = (
         np.concatenate(ceiling_parts)
         if ceiling_parts
