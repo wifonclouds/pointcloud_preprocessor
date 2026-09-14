@@ -31,8 +31,8 @@ def find_input_file(project_dir: Path) -> Path:
 
 
 def find_control_points_file(project_dir: Path) -> Path:
-    """Find control_point.txt directly in the project directory."""
-    file_path = project_dir / "control_point.txt"
+    """Find control_points.txt directly in the project directory."""
+    file_path = project_dir / "control_points.txt"
 
     if not file_path.exists():
         raise FileNotFoundError(
