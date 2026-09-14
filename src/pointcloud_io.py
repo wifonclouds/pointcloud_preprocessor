@@ -53,13 +53,19 @@ def load_point_cloud(file_path: Path) -> o3d.geometry.PointCloud:
         cloud = o3d.geometry.PointCloud()
         cloud.points = o3d.utility.Vector3dVector(points)
 
+        # Preserve LAS RGB colors when present.
+        if all(hasattr(las, channel) for channel in ("red", "green", "blue")):
+            colors = np.column_stack((las.red, las.green, las.blue)).astype(np.float64)
+            max_color = max(float(colors.max()), 1.0)
+            colors /= 65535.0 if max_color > 255.0 else 255.0
+            cloud.colors = o3d.utility.Vector3dVector(np.clip(colors, 0.0, 1.0))
+
         return cloud
 
-    elif suffix in (".ply", ".pcd"):
+    if suffix in (".ply", ".pcd"):
         return o3d.io.read_point_cloud(str(file_path))
 
-    else:
-        raise ValueError(f"Unsupported file format: {suffix}")
+    raise ValueError(f"Unsupported file format: {suffix}")
 
 
 def load_control_points(file_path: Path) -> np.ndarray:
@@ -103,13 +109,23 @@ def save_point_cloud(
         las.header.offsets = template.header.offsets
 
         points = np.asarray(cloud.points)
-
         las.x = points[:, 0]
         las.y = points[:, 1]
         las.z = points[:, 2]
 
-        las.write(output_path)
+        # Preserve RGB in generated LAS files when the input LAS contains it.
+        if (
+            all(hasattr(template, channel) for channel in ("red", "green", "blue"))
+            and cloud.has_colors()
+        ):
+            colors = np.asarray(cloud.colors)
+            colors = np.clip(colors, 0.0, 1.0)
+            rgb = np.rint(colors * 65535.0).astype(np.uint16)
+            las.red = rgb[:, 0]
+            las.green = rgb[:, 1]
+            las.blue = rgb[:, 2]
 
+        las.write(output_path)
         return
 
     raise ValueError(f"Unsupported output format: {suffix}")
