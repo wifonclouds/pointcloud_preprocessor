@@ -24,7 +24,8 @@ def segment_point_cloud(
     wall_plane_distance: float = 0.05,
     wall_plane_min_points: int = 500,
     wall_min_height: float = 1.5,
-    wall_min_horizontal_extent: float = 1.0,
+    wall_min_horizontal_extent: float = 0.7,
+    wall_min_vertical_coverage: float = 0.70,
     max_wall_planes: int = 100,
     wall_sor_neighbors: int = 30,
     wall_sor_std_ratio: float = 1.5,
@@ -35,10 +36,10 @@ def segment_point_cloud(
     Every other large horizontal plane above the floor is classified as
     ceiling.
 
-    Walls are no longer defined as every point with a vertical normal. The
-    vertical candidates are repeatedly fitted with RANSAC planes. A plane is
-    accepted as a structural wall only when it has enough inliers and enough
-    physical extent. This removes small vertical objects between the walls.
+    A wall is treated as structural only when a vertical RANSAC plane has
+    enough points, enough horizontal extent and, importantly, extends through
+    most of the floor-to-ceiling height. This prevents small vertical objects
+    in the corridor from becoming walls.
     """
 
     if control_points.shape != (3, 3):
@@ -76,6 +77,8 @@ def segment_point_cloud(
 
     floor_cloud = cloud.select_by_index(floor_indices)
 
+    ceiling_height = _get_ceiling_reference_z(points, ceiling_indices, floor_reference_z)
+
     wall_cloud = _extract_structural_walls(
         cloud,
         wall_angle=wall_angle,
@@ -83,6 +86,9 @@ def segment_point_cloud(
         min_points=wall_plane_min_points,
         min_height=wall_min_height,
         min_horizontal_extent=wall_min_horizontal_extent,
+        floor_z=floor_reference_z,
+        ceiling_z=ceiling_height,
+        min_vertical_coverage=wall_min_vertical_coverage,
         max_planes=max_wall_planes,
     )
 
@@ -146,9 +152,12 @@ def _extract_structural_walls(
     min_points: int,
     min_height: float,
     min_horizontal_extent: float,
+    floor_z: float,
+    ceiling_z: float,
+    min_vertical_coverage: float,
     max_planes: int,
 ) -> o3d.geometry.PointCloud:
-    """Extract large vertical RANSAC planes and reject small vertical objects."""
+    """Extract structural vertical planes using RANSAC and height coverage."""
 
     wall_mask = _detect_walls(cloud, wall_angle)
     wall_indices = np.where(wall_mask)[0]
@@ -162,17 +171,29 @@ def _extract_structural_walls(
     points = np.asarray(cloud.points)
     accepted_indices: list[np.ndarray] = []
 
-    # Work on a point cloud made only from vertical-normal candidates.
+    if ceiling_z <= floor_z:
+        ceiling_z = float(points[:, 2].max())
+
+    target_height = ceiling_z - floor_z
+    if target_height <= 0.0:
+        raise ValueError("Invalid floor/ceiling height range.")
+
+    # Divide the room height into bands. A real wall should be observed in
+    # most bands, while a cabinet, sign, machine or other small object should
+    # normally occupy only a subset of them.
+    n_height_bins = 10
+    lower = floor_z + 0.05 * target_height
+    upper = ceiling_z - 0.05 * target_height
+    bin_edges = np.linspace(lower, upper, n_height_bins + 1)
+    required_bins = int(np.ceil(n_height_bins * min_vertical_coverage))
+
     while len(remaining_indices) >= min_points and len(accepted_indices) < max_planes:
         candidate = cloud.select_by_index(remaining_indices)
-
-        if len(candidate.points) < min_points:
-            break
 
         plane_model, inliers = candidate.segment_plane(
             distance_threshold=plane_distance,
             ransac_n=3,
-            num_iterations=1000,
+            num_iterations=1500,
         )
 
         if len(inliers) < min_points:
@@ -184,11 +205,12 @@ def _extract_structural_walls(
             break
         plane_normal /= normal_length
 
-        # The fitted plane must itself be vertical.
-        vertical_similarity = abs(float(plane_normal[2]))
-        max_vertical_component = np.sin(np.deg2rad(wall_angle))
-        if vertical_similarity > max_vertical_component:
-            remaining_indices = np.delete(remaining_indices, np.asarray(inliers, dtype=int))
+        # The fitted plane itself must be vertical.
+        if abs(float(plane_normal[2])) > np.sin(np.deg2rad(wall_angle)):
+            remaining_indices = np.delete(
+                remaining_indices,
+                np.asarray(inliers, dtype=int),
+            )
             continue
 
         inlier_indices = remaining_indices[np.asarray(inliers, dtype=int)]
@@ -198,19 +220,30 @@ def _extract_structural_walls(
         horizontal_extent = max(float(extent[0]), float(extent[1]))
         height = float(extent[2])
 
-        # A structural wall needs substantial physical extent in the
-        # horizontal direction and vertical direction. Small furniture,
-        # equipment and isolated vertical objects fail these tests.
-        if height >= min_height and horizontal_extent >= min_horizontal_extent:
+        histogram, _ = np.histogram(plane_points[:, 2], bins=bin_edges)
+        covered_bins = int(np.count_nonzero(histogram))
+
+        # Structural wall criteria:
+        # 1. enough points,
+        # 2. physically tall,
+        # 3. enough horizontal extent,
+        # 4. observed through most of the floor-to-ceiling height.
+        if (
+            height >= min_height
+            and horizontal_extent >= min_horizontal_extent
+            and covered_bins >= required_bins
+        ):
             accepted_indices.append(inlier_indices)
 
-        remaining_indices = np.delete(remaining_indices, np.asarray(inliers, dtype=int))
+        remaining_indices = np.delete(
+            remaining_indices,
+            np.asarray(inliers, dtype=int),
+        )
 
     if not accepted_indices:
         raise ValueError("No structural wall planes detected.")
 
-    indices = np.concatenate(accepted_indices)
-    indices = np.unique(indices)
+    indices = np.unique(np.concatenate(accepted_indices))
     return cloud.select_by_index(indices)
 
 
@@ -288,7 +321,6 @@ def _classify_horizontal_planes(
 
     floor_parts: list[np.ndarray] = []
     ceiling_parts: list[np.ndarray] = []
-
     floor_plane_found = False
 
     for plane_indices in planes:
@@ -325,6 +357,19 @@ def _classify_horizontal_planes(
     )
 
     return floor_indices, ceiling_indices
+
+
+def _get_ceiling_reference_z(
+    points: np.ndarray,
+    ceiling_indices: np.ndarray,
+    floor_reference_z: float,
+) -> float:
+    """Return the highest detected ceiling plane, with a point-cloud fallback."""
+
+    if len(ceiling_indices) == 0:
+        return float(points[:, 2].max())
+
+    return float(np.max(points[ceiling_indices, 2]))
 
 
 def _remove_wall_outliers(
