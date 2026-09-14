@@ -21,16 +21,24 @@ def segment_point_cloud(
     wall_angle: float = 15.0,
     horizontal_cluster_eps: float = 0.12,
     horizontal_cluster_min_points: int = 100,
+    wall_plane_distance: float = 0.05,
+    wall_plane_min_points: int = 500,
+    wall_min_height: float = 1.5,
+    wall_min_horizontal_extent: float = 1.0,
+    max_wall_planes: int = 100,
     wall_sor_neighbors: int = 30,
     wall_sor_std_ratio: float = 1.5,
 ) -> SegmentationResult:
-    """Segment large horizontal planes and walls.
+    """Segment floor, structural walls and ceiling planes.
 
-    The first control point is the origin/reference point. The large
-    horizontal plane closest to that point defines the floor reference.
-    Every other large horizontal plane above that floor is classified as
-    ceiling. Horizontal planes below the floor reference are ignored by
-    floor/ceiling classification.
+    Floor is the large horizontal plane closest to the first control point.
+    Every other large horizontal plane above the floor is classified as
+    ceiling.
+
+    Walls are no longer defined as every point with a vertical normal. The
+    vertical candidates are repeatedly fitted with RANSAC planes. A plane is
+    accepted as a structural wall only when it has enough inliers and enough
+    physical extent. This removes small vertical objects between the walls.
     """
 
     if control_points.shape != (3, 3):
@@ -43,7 +51,6 @@ def segment_point_cloud(
 
     points = np.asarray(cloud.points)
     horizontal_mask = _detect_horizontal_surfaces(cloud, floor_angle)
-    wall_mask = _detect_walls(cloud, wall_angle)
 
     horizontal_indices = np.where(horizontal_mask)[0]
     horizontal_cloud = cloud.select_by_index(horizontal_indices)
@@ -69,7 +76,16 @@ def segment_point_cloud(
 
     floor_cloud = cloud.select_by_index(floor_indices)
 
-    wall_cloud = cloud.select_by_index(np.where(wall_mask)[0])
+    wall_cloud = _extract_structural_walls(
+        cloud,
+        wall_angle=wall_angle,
+        plane_distance=wall_plane_distance,
+        min_points=wall_plane_min_points,
+        min_height=wall_min_height,
+        min_horizontal_extent=wall_min_horizontal_extent,
+        max_planes=max_wall_planes,
+    )
+
     wall_cloud = _remove_wall_outliers(
         wall_cloud,
         nb_neighbors=wall_sor_neighbors,
@@ -121,6 +137,81 @@ def _detect_walls(
     similarity = np.abs(normals @ z_axis)
     threshold = np.cos(np.deg2rad(90.0 - angle))
     return similarity < threshold
+
+
+def _extract_structural_walls(
+    cloud: o3d.geometry.PointCloud,
+    wall_angle: float,
+    plane_distance: float,
+    min_points: int,
+    min_height: float,
+    min_horizontal_extent: float,
+    max_planes: int,
+) -> o3d.geometry.PointCloud:
+    """Extract large vertical RANSAC planes and reject small vertical objects."""
+
+    wall_mask = _detect_walls(cloud, wall_angle)
+    wall_indices = np.where(wall_mask)[0]
+
+    if len(wall_indices) < min_points:
+        raise ValueError(
+            f"Not enough vertical wall candidates: {len(wall_indices)} points."
+        )
+
+    remaining_indices = wall_indices.copy()
+    points = np.asarray(cloud.points)
+    accepted_indices: list[np.ndarray] = []
+
+    # Work on a point cloud made only from vertical-normal candidates.
+    while len(remaining_indices) >= min_points and len(accepted_indices) < max_planes:
+        candidate = cloud.select_by_index(remaining_indices)
+
+        if len(candidate.points) < min_points:
+            break
+
+        plane_model, inliers = candidate.segment_plane(
+            distance_threshold=plane_distance,
+            ransac_n=3,
+            num_iterations=1000,
+        )
+
+        if len(inliers) < min_points:
+            break
+
+        plane_normal = np.asarray(plane_model[:3], dtype=float)
+        normal_length = np.linalg.norm(plane_normal)
+        if normal_length == 0.0:
+            break
+        plane_normal /= normal_length
+
+        # The fitted plane must itself be vertical.
+        vertical_similarity = abs(float(plane_normal[2]))
+        max_vertical_component = np.sin(np.deg2rad(wall_angle))
+        if vertical_similarity > max_vertical_component:
+            remaining_indices = np.delete(remaining_indices, np.asarray(inliers, dtype=int))
+            continue
+
+        inlier_indices = remaining_indices[np.asarray(inliers, dtype=int)]
+        plane_points = points[inlier_indices]
+
+        extent = plane_points.max(axis=0) - plane_points.min(axis=0)
+        horizontal_extent = max(float(extent[0]), float(extent[1]))
+        height = float(extent[2])
+
+        # A structural wall needs substantial physical extent in the
+        # horizontal direction and vertical direction. Small furniture,
+        # equipment and isolated vertical objects fail these tests.
+        if height >= min_height and horizontal_extent >= min_horizontal_extent:
+            accepted_indices.append(inlier_indices)
+
+        remaining_indices = np.delete(remaining_indices, np.asarray(inliers, dtype=int))
+
+    if not accepted_indices:
+        raise ValueError("No structural wall planes detected.")
+
+    indices = np.concatenate(accepted_indices)
+    indices = np.unique(indices)
+    return cloud.select_by_index(indices)
 
 
 def _extract_large_horizontal_planes(
@@ -203,7 +294,6 @@ def _classify_horizontal_planes(
     for plane_indices in planes:
         plane_z = float(np.median(points[plane_indices, 2]))
 
-        # The plane used to establish the reference is the floor.
         if not floor_plane_found and np.isclose(
             plane_z,
             floor_reference_z,
@@ -214,7 +304,6 @@ def _classify_horizontal_planes(
         elif plane_z > floor_reference_z:
             ceiling_parts.append(plane_indices)
 
-    # Safety fallback: find the plane whose Z is closest to the reference.
     if not floor_parts and planes:
         floor_plane = min(
             planes,
@@ -224,7 +313,11 @@ def _classify_horizontal_planes(
         )
         floor_parts.append(floor_plane)
 
-    floor_indices = np.concatenate(floor_parts) if floor_parts else np.array([], dtype=int)
+    floor_indices = (
+        np.concatenate(floor_parts)
+        if floor_parts
+        else np.array([], dtype=int)
+    )
     ceiling_indices = (
         np.concatenate(ceiling_parts)
         if ceiling_parts
@@ -239,7 +332,7 @@ def _remove_wall_outliers(
     nb_neighbors: int = 30,
     std_ratio: float = 1.5,
 ) -> o3d.geometry.PointCloud:
-    """Remove statistical outliers from the wall point cloud only."""
+    """Remove statistical outliers from the structural wall cloud only."""
 
     if len(cloud.points) <= nb_neighbors:
         return cloud
