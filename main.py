@@ -30,7 +30,7 @@ def process_file(input_file: Path, project_dir: Path, control_points):
     cloud = preprocess_point_cloud(cloud, control_points)
 
     print("Segmenting point cloud...")
-    result = segment_point_cloud(cloud)
+    result = segment_point_cloud(cloud, control_points)
 
     print("Saving results...")
 
@@ -43,6 +43,12 @@ def process_file(input_file: Path, project_dir: Path, control_points):
     save_point_cloud(
         result.walls,
         output_dir / f"{project_name}_walls{input_file.suffix}",
+        input_file,
+    )
+
+    save_point_cloud(
+        result.ceiling,
+        output_dir / f"{project_name}_ceiling{input_file.suffix}",
         input_file,
     )
 
