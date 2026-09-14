@@ -26,9 +26,8 @@ def segment_point_cloud(
 ) -> SegmentationResult:
     """Segment large horizontal planes, walls and the space above the walls.
 
-    The first control point is used to identify the floor plane. This means
-    that a horizontal table, shelf or other object is not treated as floor
-    just because it has a low or high Z value.
+    All detected large horizontal planes are preserved as ceiling candidates.
+    The first control point is used only to identify the floor plane.
     """
 
     if control_points.shape != (3, 3):
@@ -37,11 +36,9 @@ def segment_point_cloud(
         )
 
     cloud = cloud.voxel_down_sample(0.02)
-
     _estimate_normals(cloud, radius=normal_radius, max_nn=normal_max_nn)
 
     points = np.asarray(cloud.points)
-
     horizontal_mask = _detect_horizontal_surfaces(cloud, floor_angle)
     wall_mask = _detect_walls(cloud, wall_angle)
 
@@ -61,8 +58,8 @@ def segment_point_cloud(
         control_points[0],
     )
 
-    ceiling_indices = _select_ceiling_plane(
-        points,
+    # Keep EVERY large horizontal plane except the selected floor.
+    ceiling_indices = _select_all_ceiling_planes(
         large_horizontal_planes,
         floor_indices,
     )
@@ -82,7 +79,6 @@ def segment_point_cloud(
     )
 
     ceiling_cloud = cloud.select_by_index(np.where(ceiling_mask)[0])
-
     cropped_cloud = _crop_above_walls(cloud, wall_cloud)
 
     return SegmentationResult(
@@ -158,8 +154,7 @@ def _extract_large_horizontal_planes(
         if len(local_indices) < min_points:
             continue
 
-        main_indices = horizontal_indices[local_indices]
-        planes.append(main_indices)
+        planes.append(horizontal_indices[local_indices])
 
     return planes
 
@@ -192,27 +187,22 @@ def _select_floor_plane(
     return best_plane
 
 
-def _select_ceiling_plane(
-    points: np.ndarray,
+def _select_all_ceiling_planes(
     planes: list[np.ndarray],
     floor_indices: np.ndarray,
 ) -> np.ndarray:
-    """Select the highest large horizontal plane other than the floor."""
+    """Return all large horizontal planes except the selected floor plane."""
 
     floor_set = set(floor_indices.tolist())
-
-    candidates = [
+    ceiling_parts = [
         plane for plane in planes
-        if not all(index in floor_set for index in plane)
+        if not set(plane.tolist()).issubset(floor_set)
     ]
 
-    if not candidates:
+    if not ceiling_parts:
         return np.array([], dtype=int)
 
-    return max(
-        candidates,
-        key=lambda indices: float(np.median(points[indices, 2])),
-    )
+    return np.concatenate(ceiling_parts)
 
 
 def _remove_wall_outliers(
