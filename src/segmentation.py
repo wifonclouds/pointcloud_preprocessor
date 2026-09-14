@@ -19,9 +19,13 @@ def segment_point_cloud(
     floor_angle: float = 15.0,
     wall_angle: float = 15.0,
     height_tolerance: float = 0.05,
+    wall_sor_neighbors: int = 30,
+    wall_sor_std_ratio: float = 1.5,
 ) -> SegmentationResult:
     """
     Segment floor, walls, ceiling and everything above the wall top.
+
+    Statistical Outlier Removal (SOR) is applied only to the wall cloud.
 
     Assumptions:
         - Z axis points upwards.
@@ -60,10 +64,15 @@ def segment_point_cloud(
     )
 
     wall_cloud = cloud.select_by_index(
-    np.where(wall_mask)[0]
-)
+        np.where(wall_mask)[0]
+    )
 
-    wall_cloud = _remove_floating_points(wall_cloud)
+    # SOR is applied ONLY to walls.
+    wall_cloud = _remove_wall_outliers(
+        wall_cloud,
+        nb_neighbors=wall_sor_neighbors,
+        std_ratio=wall_sor_std_ratio,
+    )
 
     ceiling_cloud = cloud.select_by_index(
         np.where(ceiling_mask)[0]
@@ -129,14 +138,22 @@ def _detect_walls(
 
     return similarity < threshold
 
-def _remove_floating_points(
+
+def _remove_wall_outliers(
     cloud: o3d.geometry.PointCloud,
     nb_neighbors: int = 30,
     std_ratio: float = 1.5,
 ) -> o3d.geometry.PointCloud:
     """
-    Remove isolated floating points while preserving continuous objects.
+    Remove statistical outliers from the wall point cloud only.
+
+    Lower std_ratio removes more points; higher values are less aggressive.
+    nb_neighbors controls how many neighboring points are used to estimate
+    the local point density.
     """
+
+    if len(cloud.points) <= nb_neighbors:
+        return cloud
 
     filtered_cloud, _ = cloud.remove_statistical_outlier(
         nb_neighbors=nb_neighbors,
