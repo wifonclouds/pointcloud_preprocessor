@@ -21,13 +21,18 @@ def segment_point_cloud(
     wall_angle: float = 15.0,
     horizontal_cluster_eps: float = 0.12,
     horizontal_cluster_min_points: int = 100,
+    floor_height_tolerance: float = 0.50,
+    ceiling_min_height: float = 2.00,
     wall_sor_neighbors: int = 30,
     wall_sor_std_ratio: float = 1.5,
 ) -> SegmentationResult:
-    """Segment large horizontal planes, walls and the space above the walls.
+    """Segment horizontal floor/ceiling surfaces and walls.
 
-    All detected large horizontal planes are preserved as ceiling candidates.
-    The first control point is used only to identify the floor plane.
+    The first control point provides the floor height reference. All large
+    horizontal planes close to that height are classified as floor. A large
+    horizontal plane is classified as ceiling only when it is at least
+    ``ceiling_min_height`` above the floor reference. Horizontal planes in
+    between remain unclassified by this stage.
     """
 
     if control_points.shape != (3, 3):
@@ -52,24 +57,21 @@ def segment_point_cloud(
         min_points=horizontal_cluster_min_points,
     )
 
-    floor_indices = _select_floor_plane(
+    floor_reference_z = _get_floor_reference_z(
         points,
         large_horizontal_planes,
         control_points[0],
     )
 
-    # Keep EVERY large horizontal plane except the selected floor.
-    ceiling_indices = _select_all_ceiling_planes(
+    floor_indices, ceiling_indices = _classify_horizontal_planes(
+        points,
         large_horizontal_planes,
-        floor_indices,
+        floor_reference_z=floor_reference_z,
+        floor_height_tolerance=floor_height_tolerance,
+        ceiling_min_height=ceiling_min_height,
     )
 
-    floor_mask = np.zeros(len(points), dtype=bool)
-    ceiling_mask = np.zeros(len(points), dtype=bool)
-    floor_mask[floor_indices] = True
-    ceiling_mask[ceiling_indices] = True
-
-    floor_cloud = cloud.select_by_index(np.where(floor_mask)[0])
+    floor_cloud = cloud.select_by_index(floor_indices)
 
     wall_cloud = cloud.select_by_index(np.where(wall_mask)[0])
     wall_cloud = _remove_wall_outliers(
@@ -78,7 +80,7 @@ def segment_point_cloud(
         std_ratio=wall_sor_std_ratio,
     )
 
-    ceiling_cloud = cloud.select_by_index(np.where(ceiling_mask)[0])
+    ceiling_cloud = cloud.select_by_index(ceiling_indices)
     cropped_cloud = _crop_above_walls(cloud, wall_cloud)
 
     return SegmentationResult(
@@ -159,12 +161,12 @@ def _extract_large_horizontal_planes(
     return planes
 
 
-def _select_floor_plane(
+def _get_floor_reference_z(
     points: np.ndarray,
     planes: list[np.ndarray],
-    first_control_point: np.ndarray,
-) -> np.ndarray:
-    """Select the large horizontal plane closest to control point 0."""
+    origin: np.ndarray,
+) -> float:
+    """Get the height of the horizontal plane closest to the origin point."""
 
     if not planes:
         raise ValueError("No large horizontal planes detected.")
@@ -174,35 +176,62 @@ def _select_floor_plane(
 
     for plane_indices in planes:
         plane_points = points[plane_indices]
-        distances = np.linalg.norm(plane_points - first_control_point, axis=1)
-        distance = float(np.min(distances))
+        distances_xy = np.linalg.norm(
+            plane_points[:, :2] - origin[:2],
+            axis=1,
+        )
+        distance_xy = float(np.min(distances_xy))
 
-        if distance < best_distance:
-            best_distance = distance
+        if distance_xy < best_distance:
+            best_distance = distance_xy
             best_plane = plane_indices
 
     if best_plane is None:
-        raise ValueError("Could not identify floor plane from control point 0.")
+        raise ValueError("Could not identify floor reference plane.")
 
-    return best_plane
+    return float(np.median(points[best_plane, 2]))
 
 
-def _select_all_ceiling_planes(
+def _classify_horizontal_planes(
+    points: np.ndarray,
     planes: list[np.ndarray],
-    floor_indices: np.ndarray,
-) -> np.ndarray:
-    """Return all large horizontal planes except the selected floor plane."""
+    floor_reference_z: float,
+    floor_height_tolerance: float,
+    ceiling_min_height: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Classify every detected horizontal plane as floor or ceiling.
 
-    floor_set = set(floor_indices.tolist())
-    ceiling_parts = [
-        plane for plane in planes
-        if not set(plane.tolist()).issubset(floor_set)
-    ]
+    Multiple planes can belong to the floor when their height is close to the
+    floor reference. A ceiling must be at least ``ceiling_min_height`` above
+    the floor reference. Intermediate horizontal planes are ignored here.
+    """
 
-    if not ceiling_parts:
-        return np.array([], dtype=int)
+    floor_parts: list[np.ndarray] = []
+    ceiling_parts: list[np.ndarray] = []
 
-    return np.concatenate(ceiling_parts)
+    ceiling_height = floor_reference_z + ceiling_min_height
+
+    for plane_indices in planes:
+        plane_z = float(np.median(points[plane_indices, 2]))
+
+        if abs(plane_z - floor_reference_z) <= floor_height_tolerance:
+            floor_parts.append(plane_indices)
+        elif plane_z >= ceiling_height:
+            ceiling_parts.append(plane_indices)
+
+    floor_indices = (
+        np.concatenate(floor_parts)
+        if floor_parts
+        else np.array([], dtype=int)
+    )
+
+    ceiling_indices = (
+        np.concatenate(ceiling_parts)
+        if ceiling_parts
+        else np.array([], dtype=int)
+    )
+
+    return floor_indices, ceiling_indices
 
 
 def _remove_wall_outliers(
