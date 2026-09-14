@@ -14,12 +14,14 @@ from src.transform import preprocess_point_cloud
 
 
 def process_file(input_file: Path, project_dir: Path, control_points):
-    """Process one point cloud file and save floor, walls and cropped results."""
+    """Process one point cloud file and save results in its own folder."""
 
     project_name = input_file.stem
-    output_dir = project_dir / "output"
+    output_dir = project_dir / "output" / project_name
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n=== Processing: {input_file.name} ===")
+    print(f"Output directory: {output_dir}")
 
     print("Loading point cloud...")
     cloud = load_point_cloud(input_file)
@@ -56,10 +58,9 @@ def process_file(input_file: Path, project_dir: Path, control_points):
 def process_project(project_dir: Path):
     """Process the standard single input file for a project."""
 
-    project_name = project_dir.name
     input_file = find_input_file(project_dir)
 
-    print(f"Loading control points for {project_name}...")
+    print(f"Loading control points for {project_dir.name}...")
     control_points_file = find_control_points_file(project_dir)
     control_points = load_control_points(control_points_file)
 
